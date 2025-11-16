@@ -1,14 +1,19 @@
 ﻿#include "ConsoleInterface.h"
+#include "HammingBlock.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
 #include <conio.h>
 #include <windows.h>
+#include <algorithm>
 
 static int inputInteger(int min, int max) {
     int number = 0;
-    while (!scanf_s("%d", &number) || getchar() != '\n' || number < min || number > max)
-    {
+    while (true) {
+        if (scanf_s("%d", &number) == 1) {
+            int c = getchar();
+            if (c == '\n' && number >= min && number <= max) break;
+        }
         printf("Неправильный ввод. Попробуйте ещё раз: ");
         rewind(stdin);
     }
@@ -33,7 +38,6 @@ void ConsoleInterface::run() {
         case 5: viewLastSentFrame(); break;
         case 6:
             portManager.closePorts();
-            std::cout << "Программа завершена." << std::endl;
             return;
         default:
             std::cout << "Неверный выбор. Попробуйте снова." << std::endl;
@@ -65,7 +69,7 @@ void ConsoleInterface::setupPorts() {
     }
     std::cout << "Ваш выбор (1-" << availablePortPairs.size() << "): ";
     int choice = inputInteger(1, static_cast<int>(availablePortPairs.size()));
-    PortPair selectedPair = availablePortPairs[choice - 1];
+    auto selectedPair = availablePortPairs[choice - 1];
     bool isPortsOpen = true;
     std::cout << "\nНастройка портов..." << std::endl;
     if (portManager.setSendPort(selectedPair.sendPort)) {
@@ -91,10 +95,10 @@ void ConsoleInterface::setupPorts() {
 void ConsoleInterface::sendMessageMenu() {
     system("cls");
 
-    if (portManager.getCurrentSendPort().empty() || portManager.getCurrentReceivePort().empty()) {
-        std::cout << "Ошибка: Порты не открыты! Откройте нужные порты для отправления сообщения." << std::endl;
+    if ((portManager.getCurrentSendPort() != "COM3" && portManager.getCurrentSendPort() != "COM10") || (portManager.getCurrentReceivePort() != "COM4" && portManager.getCurrentReceivePort() != "COM11")) {
+        std::cout << "Ошибка: Порты не настроены!" << std::endl;
         std::cout << "\nНажмите любую клавишу для продолжения..." << std::endl;
-        _getch(); rewind(stdin);
+        _getch();
         return;
     }
 
@@ -107,7 +111,6 @@ void ConsoleInterface::sendMessageMenu() {
     std::getline(std::cin, message);
     if (message.empty()) { std::cout << "Сообщение не может быть пустым!" << std::endl; _getch(); rewind(stdin); return; }
 
-    std::cout << "\nОтправка сообщения: \"" << message << "\"" << std::endl;
     DWORD bytesWritten = 0;
     if (portManager.sendMessage(message, &bytesWritten)) {
         std::cout << "Сообщение успешно отправлено!" << std::endl;
@@ -119,25 +122,129 @@ void ConsoleInterface::sendMessageMenu() {
     _getch(); rewind(stdin);
 }
 
+static std::string to_hex(uint8_t v) {
+    std::ostringstream oss;
+    oss << "0x" << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << int(v);
+    return oss.str();
+}
+
+std::string ConsoleInterface::prettyPrintRawFrame(const std::vector<uint8_t>& stuffed) const {
+    const uint8_t ESC = 0x1B;
+    std::ostringstream oss;
+
+    if (stuffed.size() < 2) return "Некорректный кадр.";
+
+    size_t i = 0;
+    oss << "Флаг начала кадра: " << to_hex(stuffed[i++]) << "\n";
+
+    // --- Поля заголовка ---
+    if (stuffed[i] == ESC) i++;
+    oss << "Отправитель: " << to_hex(stuffed[i++]) << "\n";
+
+    if (stuffed[i] == ESC) i++;
+    oss << "Получатель: " << to_hex(stuffed[i++]) << "\n";
+
+    uint64_t time = 0;
+    for (int idx = 0; idx < 8; idx++) {
+        if (stuffed[i] == ESC) i++;
+        time |= (uint64_t(stuffed[i++]) << (8 * idx));
+    }
+
+    oss << "Время отправления: ";
+    for (int b = 0; b < 8; b++) {
+        uint8_t byte = (time >> (8 * b)) & 0xFF;
+        oss << to_hex(byte) << " ";
+    }
+    oss << "\n";
+
+    if (stuffed[i] == ESC) i++;
+    oss << "Порядковый номер кадра: " << to_hex(stuffed[i++]) << "\n";
+
+    // --- Длина данных (2 байта, Big Endian) ---
+    uint16_t dataLen = 0;
+    if (stuffed[i] == ESC) i++;
+    dataLen |= (uint16_t)stuffed[i++] << 8;
+    if (stuffed[i] == ESC) i++;
+    dataLen |= (uint16_t)stuffed[i++];
+
+    // --- Данные ---
+    oss << "Данные: ";
+    int logical_bytes_read = 0;
+    while (logical_bytes_read < dataLen && i < stuffed.size() - 1) {
+        uint8_t current_byte = stuffed[i];
+        oss << to_hex(current_byte) << " ";
+        if (current_byte == ESC) {
+            i++; // Переходим к следующему байту, который тоже часть данных
+            oss << to_hex(stuffed[i]) << " ";
+        }
+        logical_bytes_read++;
+        i++;
+    }
+    oss << "\n";
+
+    // --- FCS ---
+    oss << "FCS: ";
+    while (i < stuffed.size() - 1) {
+        oss << to_hex(stuffed[i++]) << " ";
+    }
+    oss << "\n";
+
+    // --- Флаг конца ---
+    oss << "Флаг конца кадра: " << to_hex(stuffed.back());
+    return oss.str();
+}
+
+
 void ConsoleInterface::receiveMessageMenu() {
     system("cls");
 
-    if (portManager.getCurrentSendPort().empty() || portManager.getCurrentReceivePort().empty()) {
-        std::cout << "Ошибка: Порты не открыты! Откройте нужные порты для приёма сообщения." << std::endl;
+    // Проверка корректности настроек портов
+    if ((portManager.getCurrentSendPort() != "COM3" && portManager.getCurrentSendPort() != "COM10") ||
+        (portManager.getCurrentReceivePort() != "COM4" && portManager.getCurrentReceivePort() != "COM11")) {
+        std::cout << "Ошибка: Порты не настроены!" << std::endl;
         std::cout << "\nНажмите любую клавишу для продолжения..." << std::endl;
-        _getch(); rewind(stdin);
+        _getch();
         return;
     }
 
+    // Получение всех кадров
     auto frames = portManager.receiveAllFrames();
-   
-        for (auto& f : frames) {
-            std::string s(f.data.begin(), f.data.end());
-            std::cout << s;
+
+    if (frames.empty()) {
+        _getch();
+        return;
+    }
+
+    std::string fullMessage;
+    bool had_uncorrectable_error = false;
+
+    // Декодирование всех кадров
+    for (auto& f : frames) {
+        HammingBlockResult res = HammingBlock::decode_and_correct(f.data, f.fcs);
+
+        if (res.double_error_detected) {
+            had_uncorrectable_error = true;
         }
-   
-    _getch(); rewind(stdin);
+
+        fullMessage.append(
+            reinterpret_cast<const char*>(res.corrected_data.data()),
+            res.corrected_data.size()
+        );
+    }
+
+    system("cls");
+
+    // Если была ошибка, вывести предупреждение, но всё равно показать сообщение
+    if (had_uncorrectable_error) {
+        std::cout << "Данные повреждены (обнаружена двойная или множественная ошибка)\n\n";
+        std::cout << "Принятое сообщение:\n";
+    }
+
+    std::cout << fullMessage;
+
+    _getch();
 }
+
 
 void ConsoleInterface::changeBaudRate() {
     system("cls");
@@ -157,64 +264,11 @@ void ConsoleInterface::changeBaudRate() {
     _getch(); rewind(stdin);
 }
 
-static std::string to_hex(uint8_t v) {
-    std::ostringstream oss;
-    oss << "0x" << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << int(v);
-    return oss.str();
-}
-
-static std::string to_hex64(uint64_t v) {
-    std::ostringstream oss;
-    oss << "0x" << std::uppercase << std::hex << std::setw(16) << std::setfill('0') << v;
-    return oss.str();
-}
-
-std::string ConsoleInterface::prettyPrint(const std::vector<uint8_t>& stuffed) const {
-    const uint8_t ESC = 0x1B;
-    std::ostringstream oss;
-    int i = 0;
-    oss << "Флаг начала кадра: " << to_hex(stuffed[i++]) << "\n";
-    if (stuffed[i] == ESC) {
-        i++;
-    }
-    oss << "Отправитель: " << to_hex(stuffed[i++]) << "\n";
-    if (stuffed[i] == ESC)
-        i++;
-    oss << "Получатель: " << to_hex(stuffed[i++]) << "\n";
-
-
-    uint64_t time = 0;
-    for (int idx = 0; idx < 8; idx++) {
-        if (stuffed[i] == ESC) i++;
-        time |= (uint64_t(stuffed[i++]) << (8 * idx)); // собираем время
-    }
-
-    // Вывод каждого байта времени через пробел
-    oss << "Время отправления: ";
-    for (int b = 0; b < 8; b++) {
-        uint8_t byte = (time >> (8 * b)) & 0xFF;
-        oss << to_hex(byte) << " ";
-    }
-    oss << "\n";
-
-    if (stuffed[i] == ESC)
-        i++;
-    oss << "Порядковый номер кадра: " << to_hex(stuffed[i++]) << "\n";
-
-    oss << "Данные: ";
-    for (; i < stuffed.size() - 1;) {
-        uint8_t b = stuffed[i++];
-        oss << to_hex(b) << " ";
-    }
-    oss << "\nФлаг конца кадра: " << to_hex(stuffed.back());
-    return oss.str();
-}
-
 void ConsoleInterface::viewLastSentFrame() {
     system("cls");
     const auto& raw = portManager.getLastSentRawFrame();
     if (raw.empty()) { std::cout << "Нет отправленных кадров для просмотра." << std::endl; _getch(); return; }
-    std::cout << prettyPrint(raw) << std::endl;
+    std::cout << prettyPrintRawFrame(raw) << std::endl;
     std::cout << "\nНажмите любую клавишу для продолжения..." << std::endl;
     _getch(); rewind(stdin);
 }

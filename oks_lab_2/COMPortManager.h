@@ -17,6 +17,7 @@ private:
     bool openPort(const std::string& portName, HANDLE& hPort, bool forReading = false);
     void reconfigurePort(HANDLE hPort);
     static uint8_t extractPortNumber(const std::string& portName);
+    void distort_payload(std::vector<uint8_t>& payload);
 
 public:
     COMPortManager();

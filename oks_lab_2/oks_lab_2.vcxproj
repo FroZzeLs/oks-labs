@@ -130,12 +130,14 @@
     <ClCompile Include="COMPortManager.cpp" />
     <ClCompile Include="ConsoleInterface.cpp" />
     <ClCompile Include="Frame.cpp" />
+    <ClCompile Include="HammingBlock.cpp" />
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="COMPortManager.h" />
     <ClInclude Include="ConsoleInterface.h" />
     <ClInclude Include="Frame.h" />
+    <ClInclude Include="HammingBlock.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

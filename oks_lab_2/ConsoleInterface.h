@@ -16,7 +16,7 @@ private:
     std::vector<DWORD> baudRates;
 
     void showMainMenu();
-    std::string prettyPrint(const std::vector<uint8_t>& stuffed) const;
+    std::string prettyPrintRawFrame(const std::vector<uint8_t>& stuffed) const;
     void setupPorts();
     void sendMessageMenu();
     void receiveMessageMenu();
