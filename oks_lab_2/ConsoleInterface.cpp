@@ -20,6 +20,12 @@ static int inputInteger(int min, int max) {
     return number;
 }
 
+static std::string to_hex(uint8_t v) {
+    std::ostringstream oss;
+    oss << "0x" << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << int(v);
+    return oss.str();
+}
+
 ConsoleInterface::ConsoleInterface()
     : availablePortPairs{ {"COM3","COM4"},{"COM10","COM11"} },
     baudRates{ 50,75,110,134,150,200,300,600,1200,2400,4800,9600,19200,38400,57600,115200 } {
@@ -29,14 +35,15 @@ void ConsoleInterface::run() {
     while (true) {
         system("cls");
         showMainMenu();
-        int choice = inputInteger(1, 6);
+        int choice = inputInteger(1, 7); // Изменено на 7
         switch (choice) {
         case 1: setupPorts(); break;
         case 2: sendMessageMenu(); break;
         case 3: receiveMessageMenu(); break;
         case 4: changeBaudRate(); break;
         case 5: viewLastSentFrame(); break;
-        case 6:
+        case 6: viewStatistics(); break; // НОВЫЙ ПУНКТ
+        case 7:
             portManager.closePorts();
             return;
         default:
@@ -56,7 +63,8 @@ void ConsoleInterface::showMainMenu() {
     std::cout << "3. Получить сообщение" << std::endl;
     std::cout << "4. Изменить скорость передачи" << std::endl;
     std::cout << "5. Просмотр структуры последнего переданного кадра" << std::endl;
-    std::cout << "6. Выход" << std::endl;
+    std::cout << "6. Статистика передачи" << std::endl; // НОВЫЙ ПУНКТ
+    std::cout << "7. Выход" << std::endl;
     std::cout << "Выберите действие: ";
 }
 
@@ -70,6 +78,7 @@ void ConsoleInterface::setupPorts() {
     std::cout << "Ваш выбор (1-" << availablePortPairs.size() << "): ";
     int choice = inputInteger(1, static_cast<int>(availablePortPairs.size()));
     auto selectedPair = availablePortPairs[choice - 1];
+
     bool isPortsOpen = true;
     std::cout << "\nНастройка портов..." << std::endl;
     if (portManager.setSendPort(selectedPair.sendPort)) {
@@ -108,7 +117,7 @@ void ConsoleInterface::sendMessageMenu() {
     std::cout << "Скорость: " << portManager.getCurrentBaudRate() << " бод" << std::endl;
     std::cout << "\nВведите сообщение для отправки: ";
     std::string message;
-    std::getline(std::cin, message);
+    std::getline(std::cin >> std::ws, message);
     if (message.empty()) { std::cout << "Сообщение не может быть пустым!" << std::endl; _getch(); rewind(stdin); return; }
 
     DWORD bytesWritten = 0;
@@ -122,12 +131,6 @@ void ConsoleInterface::sendMessageMenu() {
     _getch(); rewind(stdin);
 }
 
-static std::string to_hex(uint8_t v) {
-    std::ostringstream oss;
-    oss << "0x" << std::uppercase << std::hex << std::setw(2) << std::setfill('0') << int(v);
-    return oss.str();
-}
-
 std::string ConsoleInterface::prettyPrintRawFrame(const std::vector<uint8_t>& stuffed) const {
     const uint8_t ESC = 0x1B;
     std::ostringstream oss;
@@ -137,7 +140,6 @@ std::string ConsoleInterface::prettyPrintRawFrame(const std::vector<uint8_t>& st
     size_t i = 0;
     oss << "Флаг начала кадра: " << to_hex(stuffed[i++]) << "\n";
 
-    // --- Поля заголовка ---
     if (stuffed[i] == ESC) i++;
     oss << "Отправитель: " << to_hex(stuffed[i++]) << "\n";
 
@@ -160,21 +162,19 @@ std::string ConsoleInterface::prettyPrintRawFrame(const std::vector<uint8_t>& st
     if (stuffed[i] == ESC) i++;
     oss << "Порядковый номер кадра: " << to_hex(stuffed[i++]) << "\n";
 
-    // --- Длина данных (2 байта, Big Endian) ---
     uint16_t dataLen = 0;
     if (stuffed[i] == ESC) i++;
     dataLen |= (uint16_t)stuffed[i++] << 8;
     if (stuffed[i] == ESC) i++;
     dataLen |= (uint16_t)stuffed[i++];
 
-    // --- Данные ---
     oss << "Данные: ";
     int logical_bytes_read = 0;
     while (logical_bytes_read < dataLen && i < stuffed.size() - 1) {
         uint8_t current_byte = stuffed[i];
         oss << to_hex(current_byte) << " ";
         if (current_byte == ESC) {
-            i++; // Переходим к следующему байту, который тоже часть данных
+            i++;
             oss << to_hex(stuffed[i]) << " ";
         }
         logical_bytes_read++;
@@ -182,32 +182,19 @@ std::string ConsoleInterface::prettyPrintRawFrame(const std::vector<uint8_t>& st
     }
     oss << "\n";
 
-    // --- FCS ---
     oss << "FCS: ";
     while (i < stuffed.size() - 1) {
         oss << to_hex(stuffed[i++]) << " ";
     }
     oss << "\n";
 
-    // --- Флаг конца ---
     oss << "Флаг конца кадра: " << to_hex(stuffed.back());
     return oss.str();
 }
 
-
 void ConsoleInterface::receiveMessageMenu() {
     system("cls");
 
-    // Проверка корректности настроек портов
-    if ((portManager.getCurrentSendPort() != "COM3" && portManager.getCurrentSendPort() != "COM10") ||
-        (portManager.getCurrentReceivePort() != "COM4" && portManager.getCurrentReceivePort() != "COM11")) {
-        std::cout << "Ошибка: Порты не настроены!" << std::endl;
-        std::cout << "\nНажмите любую клавишу для продолжения..." << std::endl;
-        _getch();
-        return;
-    }
-
-    // Получение всех кадров
     auto frames = portManager.receiveAllFrames();
 
     if (frames.empty()) {
@@ -218,7 +205,6 @@ void ConsoleInterface::receiveMessageMenu() {
     std::string fullMessage;
     bool had_uncorrectable_error = false;
 
-    // Декодирование всех кадров
     for (auto& f : frames) {
         HammingBlockResult res = HammingBlock::decode_and_correct(f.data, f.fcs);
 
@@ -232,19 +218,14 @@ void ConsoleInterface::receiveMessageMenu() {
         );
     }
 
-    system("cls");
-
-    // Если была ошибка, вывести предупреждение, но всё равно показать сообщение
     if (had_uncorrectable_error) {
-        std::cout << "Данные повреждены (обнаружена двойная или множественная ошибка)\n\n";
-        std::cout << "Принятое сообщение:\n";
+        std::cout << "Данные повреждены (обнаружена двойная или множественная ошибка)\nПринятое сообщение:\n\n";
     }
 
     std::cout << fullMessage;
 
     _getch();
 }
-
 
 void ConsoleInterface::changeBaudRate() {
     system("cls");
@@ -271,4 +252,32 @@ void ConsoleInterface::viewLastSentFrame() {
     std::cout << prettyPrintRawFrame(raw) << std::endl;
     std::cout << "\nНажмите любую клавишу для продолжения..." << std::endl;
     _getch(); rewind(stdin);
+}
+
+// НОВЫЙ МЕТОД
+void ConsoleInterface::viewStatistics() {
+    system("cls");
+
+    CSMA::Stats global = portManager.getGlobalStats();
+    CSMA::Stats last = portManager.getLastSessionStats();
+
+    std::cout << "=== Статистика передачи ===" << std::endl << std::endl;
+
+    // Лямбда для красивого вывода
+    auto printStats = [](const std::string& title, const CSMA::Stats& s) {
+        std::cout << title << std::endl;
+        std::cout << "--------------------------------" << std::endl;
+        std::cout << "Передано кадров (успешно): " << s.packets_sent << std::endl;
+        std::cout << "Общее число попыток:       " << s.total_attempts << std::endl;
+        std::cout << "Случаев занятости канала:  " << s.busy_events << std::endl;
+        std::cout << "Количество коллизий:       " << s.collisions << std::endl;
+        std::cout << "Отправлено JAM-сигналов:   " << s.jam_sent << std::endl;
+        std::cout << std::endl;
+        };
+
+    printStats("--- Общая статистика (с момента запуска) ---", global);
+    printStats("--- Статистика последней пересылки ---", last);
+
+    std::cout << "Нажмите любую клавишу для возврата в меню..." << std::endl;
+    _getch();
 }

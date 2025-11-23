@@ -136,6 +136,7 @@
   <ItemGroup>
     <ClInclude Include="COMPortManager.h" />
     <ClInclude Include="ConsoleInterface.h" />
+    <ClInclude Include="CsmaConfig.h" />
     <ClInclude Include="Frame.h" />
     <ClInclude Include="HammingBlock.h" />
   </ItemGroup>

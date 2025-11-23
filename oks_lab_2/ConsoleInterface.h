@@ -22,6 +22,7 @@ private:
     void receiveMessageMenu();
     void changeBaudRate();
     void viewLastSentFrame();
+    void viewStatistics(); // мнбши лернд
 
 public:
     ConsoleInterface();
